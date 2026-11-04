@@ -1,6 +1,7 @@
 //! In-memory folder tree. Holds metadata only: passwords and notes are never
 //! deserialized from the server response.
 
+use crate::edit::EntryInput;
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Default)]
@@ -82,6 +83,34 @@ impl TreeNode {
     pub fn entry_count(&self) -> usize {
         self.entries.len() + self.children.iter().map(TreeNode::entry_count).sum::<usize>()
     }
+
+    /// Changes a known entry, as the server stores it. Returns false if the id is unknown.
+    pub fn update_entry(&mut self, id: &str, input: &EntryInput) -> bool {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
+            entry.name = input.name.trim().to_string();
+            entry.username = input.username.trim().to_string();
+            entry.url = input.url.trim().to_string();
+            self.entries.sort_by_key(|e| e.name.to_lowercase());
+            return true;
+        }
+        self.children.iter_mut().any(|child| child.update_entry(id, input))
+    }
+
+    /// Adds a new entry to a folder. Returns false if the folder is unknown.
+    pub fn add_entry(&mut self, group_id: &str, id: &str, input: &EntryInput) -> bool {
+        if self.id == group_id {
+            self.entries.push(Hit {
+                id: id.to_string(),
+                name: input.name.trim().to_string(),
+                username: input.username.trim().to_string(),
+                url: input.url.trim().to_string(),
+                path: self.path.clone(),
+            });
+            self.entries.sort_by_key(|e| e.name.to_lowercase());
+            return true;
+        }
+        self.children.iter_mut().any(|child| child.add_entry(group_id, id, input))
+    }
 }
 
 #[cfg(test)]
@@ -110,6 +139,47 @@ mod tests {
         assert_eq!(tree.children[0].id, "0.1");
         assert_eq!(tree.children[1].id, "b");
         assert_eq!(tree.children[0].entries[0].id, "1");
+    }
+
+    fn input(name: &str) -> EntryInput {
+        EntryInput {
+            name: format!(" {name} "),
+            username: "neu".into(),
+            url: "https://x.example".into(),
+            notes: "notiz".into(),
+            password: Some("geheim".into()),
+            totp: None,
+        }
+    }
+
+    #[test]
+    fn updates_one_entry_keeps_order_and_never_stores_secrets() {
+        let mut tree = sample();
+        assert!(tree.update_entry("1", &input("zz")));
+        let alpha = &tree.children[0];
+        assert_eq!(alpha.entries[1].id, "1");
+        assert_eq!(alpha.entries[1].name, "zz");
+        assert_eq!(alpha.entries[1].username, "neu");
+        let json = serde_json::to_string(&tree).unwrap();
+        assert!(!json.contains("geheim") && !json.contains("notiz"));
+    }
+
+    #[test]
+    fn unknown_entry_or_folder_reports_false() {
+        let mut tree = sample();
+        assert!(!tree.update_entry("nope", &input("x")));
+        assert!(!tree.add_entry("nope", "9", &input("x")));
+        assert_eq!(tree.entry_count(), 3);
+    }
+
+    #[test]
+    fn adds_entry_with_the_folder_path() {
+        let mut tree = sample();
+        assert!(tree.add_entry("b", "9", &input("Alpha")));
+        let zeta = &tree.children[1];
+        assert_eq!(zeta.entries[0].id, "9");
+        assert_eq!(zeta.entries[0].path, "Zeta");
+        assert_eq!(tree.entry_count(), 4);
     }
 
     #[test]

@@ -3,7 +3,12 @@
   "productName": "Pleasant Tray",
   "version": "0.1.0",
   "identifier": "io.github.timo-hoen-ias.pleasant-tray",
-  "build": { "frontendDist": "../ui" },
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build"
+  },
   "app": {
     "withGlobalTauri": true,
     "windows": [
@@ -27,7 +32,7 @@
     "icon": ["icons/icon.ico"],
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
-      "nsis": { "installMode": "currentUser" }
+      "nsis": { "installMode": "currentUser", "installerHooks": "installer-hooks.nsh" }
     }
   }
 }

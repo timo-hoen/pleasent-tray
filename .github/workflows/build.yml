@@ -25,6 +25,18 @@ jobs:
           workspaces: src-tauri
           cache-all-crates: true
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install and test UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm test
+
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
 

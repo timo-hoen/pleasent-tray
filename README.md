@@ -7,9 +7,10 @@ Schlanker Windows-Client für [Pleasant Password Server](https://pleasantpasswor
 - Alle Ordner durchsuchen (`Strg+K` springt ins Suchfeld) und einzelne Ordner filtern
 - Einträge ansehen, anlegen und bearbeiten
 - Benutzername, Passwort und weitere Felder in die Zwischenablage kopieren
-- TOTP-Codes anzeigen
+- TOTP-Codes anzeigen und einrichten
 - Anmeldung mit Zwei-Faktor-Code
 - Automatisches Sperren der App
+- Optionaler Start mit Windows, im Setup wählbar
 
 ## Installation
 
@@ -17,19 +18,26 @@ Das Setup liegt unter [Releases](https://github.com/timo-hoen-ias/pleasent-tray/
 
 Beim ersten Start gibst du die Adresse deines Servers ein. Es sind nur `https`-Adressen erlaubt.
 
+Mit `?unsafe=1` am Ende der Adresse (zum Beispiel `https://192.0.2.1:10001?unsafe=1`) prüft die App das Zertifikat dieses Servers nicht. Das ist unsicher: Jedes Gerät im Netz könnte sich dann als Server ausgeben und Passwörter mitlesen. Die Einstellungen zeigen dann einen Warnhinweis.
+
+## Fehlersuche
+
+Verbindungsfehler und HTTP-Fehler stehen in `%LOCALAPPDATA%\io.github.timo-hoen-ias.pleasant-tray\pleasant-tray.log`. Das Log enthält den Server-Host, aber keine Passwörter, Tokens, Einmalcodes, Benutzernamen oder Eintragsdaten.
+
 ## Selbst bauen
 
-Voraussetzungen: Windows, [Rust](https://rustup.rs/) (stable) und die Tauri-CLI.
+Voraussetzungen: Windows, [Rust](https://rustup.rs/) (stable), [Node.js](https://nodejs.org/) 22 und die Tauri-CLI. Die Oberfläche nutzt React, Tailwind und [shadcn/ui](https://ui.shadcn.com/).
 
 ```powershell
 cargo install tauri-cli --version "^2" --locked
+npm ci --prefix ui
 cd src-tauri
 cargo tauri build
 ```
 
 Das Setup liegt danach unter `src-tauri/target/release/bundle/nsis/`.
 
-Tests laufen mit `cargo test` in `src-tauri`.
+Tests laufen mit `npm test` in `ui` und `cargo test` in `src-tauri`. Für `cargo test` muss die UI vorher mit `npm run build` gebaut sein.
 
 ### Optionale Build-Variablen
 

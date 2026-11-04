@@ -1,99 +1,12 @@
 <!doctype html>
 <html lang="de">
-<head>
-  <meta charset="utf-8">
-  <title>Pleasant Tray</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
-  <main id="login-view" class="login" hidden>
-    <h1>Tresor öffnen</h1>
-    <p class="lede">Mit deinem Pleasant-Passwort entsperren.</p>
-    <form id="login-form" autocomplete="off">
-      <label>Server<input id="server" spellcheck="false" required></label>
-      <label>Benutzername<input id="username" spellcheck="false" required></label>
-      <label id="password-field">Passwort<input id="password" type="password"></label>
-      <label id="otp-field" hidden>Zwei-Faktor-Code<input id="otp" inputmode="numeric" autocomplete="one-time-code"></label>
-      <p id="login-error" class="error" role="alert" hidden></p>
-      <button id="login-button" type="submit">Entsperren</button>
-    </form>
-  </main>
-
-  <main id="search-view" class="search" hidden>
-    <div class="searchbar">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
-      <input id="query" type="search" autocomplete="off" placeholder="Alle Ordner durchsuchen …" aria-label="Suche" spellcheck="false">
-      <button id="query-clear" class="clear" type="button" aria-label="Suche löschen" title="Suche löschen" hidden>×</button>
-    </div>
-    <ul id="tree" class="tree" aria-label="Ordner"></ul>
-    <div id="splitter" class="splitter" role="separator" aria-orientation="vertical" aria-label="Breite der Ordnerleiste" tabindex="0"></div>
-    <footer>
-      <span class="footer-status">
-        <button id="reload" class="icon" type="button" aria-label="Ordner neu einlesen" title="Ordner neu einlesen">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 6M20 5v6h-6"/></svg>
-        </button>
-        <span id="status" role="status"></span>
-      </span>
-      <button id="settings" class="icon" type="button" aria-label="Einstellungen" title="Einstellungen" aria-haspopup="true" aria-expanded="false" aria-controls="settings-menu">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      </button>
-      <div id="settings-menu" class="settings-menu" hidden>
-        <p id="server-label" class="server-line"></p>
-        <button id="theme" type="button"></button>
-        <button id="lock" type="button">Sperren</button>
-        <button id="logout" type="button">Abmelden</button>
-      </div>
-    </footer>
-  </main>
-  <main id="folder-pane" class="folder-pane" hidden>
-    <header>
-      <div class="title"><h2 id="f-name"></h2><p id="f-path" class="meta"></p></div>
-      <div class="filter-box">
-        <input id="f-filter" type="search" autocomplete="off" placeholder="In diesem Ordner filtern …" aria-label="Ordnerinhalt filtern" spellcheck="false">
-        <button id="filter-clear" class="clear" type="button" aria-label="Filter löschen" title="Filter löschen" hidden>×</button>
-      </div>
-      <button id="new-entry" class="action" type="button">Neuer Eintrag</button>
-    </header>
-    <div id="f-table" class="f-table"></div>
-  </main>
-  <main id="edit-view" class="detail" hidden>
-    <header>
-      <button id="edit-cancel" class="icon" type="button" aria-label="Abbrechen" title="Abbrechen">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
-      </button>
-      <div class="title"><h2 id="e-title"></h2><p id="e-path" class="meta"></p></div>
-    </header>
-    <form id="edit-form" class="edit-form" autocomplete="off">
-      <label>Titel<input id="e-name" spellcheck="false" required></label>
-      <label>Benutzername<input id="e-username" spellcheck="false"></label>
-      <label>Passwort<input id="e-password" type="password" autocomplete="new-password"></label>
-      <label>URL<input id="e-url" spellcheck="false"></label>
-      <label>Notizen<textarea id="e-notes" rows="5" spellcheck="false"></textarea></label>
-      <p id="e-error" class="error" role="alert" hidden></p>
-      <button id="e-save" type="submit">Speichern</button>
-    </form>
-  </main>
-  <main id="detail-view" class="detail" hidden>
-    <header>
-      <button id="back" class="icon" type="button" aria-label="Zurück">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
-      </button>
-      <div class="title"><h2 id="d-name"></h2><p id="d-path" class="meta"></p></div>
-      <button id="edit-entry" class="action" type="button">Bearbeiten</button>
-    </header>
-    <section id="totp" class="totp" hidden>
-      <button id="totp-copy" type="button" aria-label="TOTP-Code kopieren">
-        <span id="totp-value" class="code"></span>
-        <span class="bar"><span id="totp-bar"></span></span>
-      </button>
-    </section>
-    <ul id="fields" class="fields"></ul>
-    <form id="comment-form" class="comment" hidden>
-      <label>Nutzungskommentar<input id="comment" required></label>
-      <button type="submit">Weiter</button>
-    </form>
-    <footer><span id="d-status" role="status"></span></footer>
-  </main>
-  <script src="app.js"></script>
-</body>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pleasant Tray</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>

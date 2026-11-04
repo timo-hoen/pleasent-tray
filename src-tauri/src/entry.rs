@@ -28,6 +28,7 @@ pub struct Detail {
     pub fields: Vec<Field>,
     pub has_totp: bool,
     pub comment_required: bool,
+    pub can_edit_totp: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,6 +58,25 @@ impl Totp {
     }
 }
 
+/// Reads what a user pastes when setting up TOTP: a Base32 secret or an `otpauth://` URI.
+/// The server only stores secret, digits and period, so it always computes with SHA-1.
+pub fn totp_from_input(input: &str) -> Result<Totp, String> {
+    let text = input.trim();
+    let totp = if text.to_lowercase().starts_with("otpauth://") {
+        from_uri(text).ok_or("Der TOTP-Link ist ungültig")?
+    } else {
+        build(text, None, None, Algorithm::Sha1).ok_or("Der TOTP-Schlüssel ist ungültig")?
+    };
+    if totp.algorithm != Algorithm::Sha1 {
+        return Err("Pleasant unterstützt für TOTP nur SHA-1".into());
+    }
+    Ok(totp)
+}
+
+pub fn encoded_secret(totp: &Totp) -> String {
+    BASE32_NOPAD.encode(&totp.secret)
+}
+
 pub fn parse(value: &Value) -> (Detail, Option<Totp>) {
     let pairs = custom_fields(value);
     let totp = find_totp(value, &pairs);
@@ -77,6 +97,7 @@ pub fn parse(value: &Value) -> (Detail, Option<Totp>) {
         notes: text(value, "Notes"),
         fields,
         has_totp: totp.is_some(),
+        can_edit_totp: value.get("HasModifyTOTPAccess").and_then(Value::as_bool).unwrap_or(false),
         comment_required: value
             .pointer("/CommentPrompts/AskForCommentOnViewPassword")
             .and_then(Value::as_bool)
@@ -239,6 +260,31 @@ mod tests {
         assert!(totp.is_none());
         assert!(detail.fields[0].secret);
         assert!(!detail.fields[1].secret);
+    }
+
+    #[test]
+    fn setup_accepts_secret_with_spaces_and_uri() {
+        let plain = totp_from_input(" gezd gnbv gy3t qojq gezd gnbv gy3t qojq ").unwrap();
+        assert_eq!(encoded_secret(&plain), RFC_SECRET);
+        assert_eq!((plain.digits, plain.period), (6, 30));
+        let uri = format!("otpauth://totp/x?secret={RFC_SECRET}&digits=8&period=60");
+        let linked = totp_from_input(&uri).unwrap();
+        assert_eq!((linked.digits, linked.period), (8, 60));
+    }
+
+    #[test]
+    fn setup_rejects_invalid_input_and_other_algorithms() {
+        assert!(totp_from_input("not base32!").is_err());
+        assert!(totp_from_input("otpauth://totp/x").is_err());
+        let uri = format!("otpauth://totp/x?secret={RFC_SECRET}&algorithm=SHA256");
+        assert!(totp_from_input(&uri).is_err());
+    }
+
+    #[test]
+    fn reads_totp_edit_permission() {
+        let (detail, _) = parse(&json!({"HasModifyTOTPAccess": true}));
+        assert!(detail.can_edit_totp);
+        assert!(!parse(&json!({})).0.can_edit_totp);
     }
 
     #[test]

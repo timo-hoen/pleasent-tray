@@ -6,6 +6,7 @@ mod credentials;
 mod edit;
 mod entry;
 mod index;
+mod log;
 mod pleasant;
 mod session_lock;
 mod tray;
@@ -36,7 +37,7 @@ struct Session {
 }
 
 struct AppState {
-    client: reqwest::Client,
+    client: pleasant::Clients,
     server: RwLock<String>,
     session: Mutex<Option<Session>>,
     /// Counts locks, so a login that was running during a lock can notice it.
@@ -46,6 +47,7 @@ struct AppState {
     startup_warning: RwLock<Option<String>>,
     token: Mutex<Option<String>>,
     tree: RwLock<Option<index::TreeNode>>,
+    tree_saved_at: AtomicU64,
     totp: RwLock<Option<entry::Totp>>,
 }
 
@@ -258,9 +260,13 @@ fn account_of(session: &Session) -> String {
 }
 
 /// The file is replaced in one step, so a crash cannot leave half a cache behind.
-async fn save_cache(app: &AppHandle, state: &AppState, tree: index::TreeNode) -> Result<(), String> {
+async fn save_cache(
+    app: &AppHandle,
+    state: &AppState,
+    tree: index::TreeNode,
+    saved_at: u64,
+) -> Result<(), String> {
     let session = state.session.lock().await.clone().ok_or("AUTH")?;
-    let saved_at = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
     let plain = serde_json::to_vec(&CachedTree { saved_at, tree }).map_err(|e| e.to_string())?;
     let sealed = tauri::async_runtime::spawn_blocking(move || {
         cache::seal(&plain, &session.password, &account_of(&session))
@@ -293,6 +299,7 @@ async fn load_cached(app: AppHandle, state: State<'_, AppState>) -> Result<Optio
     };
     ensure_unlocked(&state).await?;
     let info = CacheInfo { count: cached.tree.entry_count(), saved_at: cached.saved_at };
+    state.tree_saved_at.store(cached.saved_at, Ordering::SeqCst);
     *state.tree.write().map_err(|_| "Index nicht verfügbar")? = Some(cached.tree);
     Ok(Some(info))
 }
@@ -307,8 +314,42 @@ async fn refresh_index(app: AppHandle, state: State<'_, AppState>) -> Result<Ref
     let count = folders.entry_count();
     ensure_unlocked(&state).await?;
     *state.tree.write().map_err(|_| "Index nicht verfügbar")? = Some(folders.clone());
-    let cache_error = save_cache(&app, &state, folders).await.err();
+    let saved_at = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|e| e.to_string())?.as_secs();
+    state.tree_saved_at.store(saved_at, Ordering::SeqCst);
+    let cache_error = save_cache(&app, &state, folders, saved_at).await.err();
     Ok(RefreshResult { count, cache_error })
+}
+
+/// Result of saving one entry. `in_tree` is false when the known folders did not contain
+/// the entry or its folder, then the UI has to read all folders from the server.
+#[derive(Serialize)]
+struct SavedEntry {
+    id: String,
+    count: usize,
+    in_tree: bool,
+    cache_error: Option<String>,
+}
+
+/// Applies one saved entry to the folders and the cache, without asking the server. The
+/// cache keeps its timestamp, because all other entries are as old as they were before.
+async fn remember_saved(
+    app: &AppHandle,
+    state: &AppState,
+    id: String,
+    apply: impl FnOnce(&mut index::TreeNode) -> bool,
+) -> Result<SavedEntry, String> {
+    ensure_unlocked(state).await?;
+    let updated = {
+        let mut guard = state.tree.write().map_err(|_| "Index nicht verfügbar")?;
+        guard.as_mut().and_then(|tree| apply(tree).then(|| tree.clone()))
+    };
+    let Some(tree) = updated else {
+        return Ok(SavedEntry { id, count: 0, in_tree: false, cache_error: None });
+    };
+    let count = tree.entry_count();
+    let saved_at = state.tree_saved_at.load(Ordering::SeqCst);
+    let cache_error = save_cache(app, state, tree, saved_at).await.err();
+    Ok(SavedEntry { id, count, in_tree: true, cache_error })
 }
 
 #[tauri::command]
@@ -420,27 +461,31 @@ async fn reveal_password(
 /// Returns the id of the new entry.
 #[tauri::command]
 async fn create_entry(
+    app: AppHandle,
     state: State<'_, AppState>,
     group_id: String,
     input: edit::EntryInput,
-) -> Result<String, String> {
+) -> Result<SavedEntry, String> {
     let group_id = valid_id(&group_id).map_err(|_| "In diesem Ordner nicht möglich")?;
     let body = edit::create_body(group_id, &input)?;
     let value = call(&state, Method::POST, "/api/v5/rest/entries", Some(&body)).await?;
-    value.as_str().map(str::to_string).ok_or_else(|| "Unerwartete Antwort vom Server".to_string())
+    let id = value.as_str().map(str::to_string).ok_or("Unerwartete Antwort vom Server")?;
+    let new_id = id.clone();
+    remember_saved(&app, &state, id, |tree| tree.add_entry(group_id, &new_id, &input)).await
 }
 
 /// Changes only the sent fields, custom fields and an unchanged password stay as they are.
 #[tauri::command]
 async fn update_entry(
+    app: AppHandle,
     state: State<'_, AppState>,
     id: String,
     input: edit::EntryInput,
-) -> Result<(), String> {
-    let id = valid_id(&id)?;
+) -> Result<SavedEntry, String> {
+    let valid = valid_id(&id)?;
     let body = edit::patch_body(&input)?;
-    call(&state, Method::PATCH, &format!("/api/v5/rest/entries/{id}"), Some(&body)).await?;
-    Ok(())
+    call(&state, Method::PATCH, &format!("/api/v5/rest/entries/{valid}"), Some(&body)).await?;
+    remember_saved(&app, &state, id.clone(), |tree| tree.update_entry(&id, &input)).await
 }
 
 #[tauri::command]
@@ -489,6 +534,142 @@ mod live_tests {
     const TEST_PASSWORD: &str = "Api-Test-Pw-1";
     const NEW_PASSWORD: &str = "Api-Test-Pw-2";
 
+    /// Changes the TOTP of PLEASANT_TEST_ENTRY, removes it and puts the original back. Same
+    /// variables as `live_inspect_entry_shape`. Prints no values.
+    #[test]
+    #[ignore = "writes to the real server"]
+    fn live_totp_set_and_remove() {
+        const OTHER_SECRET: &str = "GEZDGNBVGY3TQOJQ";
+        let env = |name: &str| std::env::var(name).expect(name);
+        let server = pleasant::normalize_server(&env("PLEASANT_TEST_SERVER")).unwrap();
+        let entry_id = env("PLEASANT_TEST_ENTRY");
+        let path = format!("/api/v5/rest/entries/{}", valid_id(&entry_id).unwrap());
+        let (user, password) = (env("PLEASANT_TEST_USER"), env("PLEASANT_TEST_PASSWORD"));
+        let client = pleasant::build_client().unwrap();
+        tauri::async_runtime::block_on(async {
+            let first = pleasant::request_token(&client, &server, &user, &password, None).await;
+            let token = match first.unwrap() {
+                TokenResult::Token(token) => token,
+                TokenResult::OtpRequired(provider) => {
+                    let code = env("PLEASANT_TEST_OTP");
+                    let otp = Some((code.as_str(), provider.as_str()));
+                    match pleasant::request_token(&client, &server, &user, &password, otp)
+                        .await
+                        .unwrap()
+                    {
+                        TokenResult::Token(token) => token,
+                        TokenResult::OtpRequired(_) => panic!("2FA code rejected"),
+                    }
+                }
+            };
+            let send = |method: Method, body: Option<Value>| {
+                let (client, server, token, path) = (&client, &server, &token, &path);
+                async move {
+                    pleasant::request(client, server, token, method, path, body.as_ref())
+                        .await
+                        .map_err(|e| match e {
+                            FetchError::Unauthorized => "401".to_string(),
+                            FetchError::Other(message) => message,
+                        })
+                        .unwrap()
+                }
+            };
+            let patch = |totp: &str| {
+                edit::patch_body(&edit::EntryInput {
+                    name: "TOTP-Test".into(),
+                    totp: Some(totp.into()),
+                    ..edit::EntryInput::default()
+                })
+                .unwrap()
+            };
+            let before = send(Method::GET, None).await;
+            let original = before["TOTPSecret"].as_str().expect("entry has TOTP").to_string();
+            // Only name and TOTP fields are of interest; everything else goes back unchanged.
+            let keep = json!({
+                "Name": before["Name"], "Username": before["Username"],
+                "Url": before["Url"], "Notes": before["Notes"],
+            });
+            let with_keep = |mut body: Value| {
+                for key in ["Name", "Username", "Url", "Notes"] {
+                    body[key] = keep[key].clone();
+                }
+                body
+            };
+
+            send(Method::PATCH, Some(with_keep(patch(OTHER_SECRET)))).await;
+            let changed = send(Method::GET, None).await;
+            let was_changed = changed["TOTPSecret"].as_str() == Some(OTHER_SECRET);
+
+            send(Method::PATCH, Some(with_keep(patch("")))).await;
+            let removed = send(Method::GET, None).await;
+            let was_removed = removed["TOTPSecret"].as_str().unwrap_or("").is_empty();
+
+            send(Method::PATCH, Some(with_keep(patch(&original)))).await;
+            let restored = send(Method::GET, None).await;
+            println!("gesetzt: {was_changed}, entfernt: {was_removed}");
+            assert_eq!(restored["TOTPSecret"].as_str(), Some(original.as_str()), "not restored");
+            assert_eq!(restored["CustomUserFields"], before["CustomUserFields"], "fields lost");
+            assert!(was_changed, "PATCH did not change TOTPSecret");
+            assert!(was_removed, "PATCH with null did not remove TOTPSecret");
+        });
+    }
+
+    /// Keeps the JSON's shape, numbers and booleans, but replaces every text with its kind.
+    fn masked(value: &Value) -> Value {
+        match value {
+            Value::String(text) if text.starts_with("otpauth://") => json!("<otpauth-uri>"),
+            Value::String(text) => json!(format!("<text, {} Zeichen>", text.chars().count())),
+            Value::Array(items) => Value::Array(items.iter().map(masked).collect()),
+            Value::Object(map) => {
+                Value::Object(map.iter().map(|(key, val)| (key.clone(), masked(val))).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// Read-only: prints how the server stores an entry, without any text values. Needs
+    /// PLEASANT_TEST_SERVER, PLEASANT_TEST_ENTRY, PLEASANT_TEST_USER and PLEASANT_TEST_PASSWORD,
+    /// plus PLEASANT_TEST_OTP for accounts with 2FA. Run with
+    /// `cargo test live_inspect -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "reads from the real server"]
+    fn live_inspect_entry_shape() {
+        let env = |name: &str| std::env::var(name).expect(name);
+        let server = pleasant::normalize_server(&env("PLEASANT_TEST_SERVER")).unwrap();
+        let (entry, user, password) =
+            (env("PLEASANT_TEST_ENTRY"), env("PLEASANT_TEST_USER"), env("PLEASANT_TEST_PASSWORD"));
+        let id = valid_id(&entry).unwrap();
+        let client = pleasant::build_client().unwrap();
+        tauri::async_runtime::block_on(async {
+            let first = pleasant::request_token(&client, &server, &user, &password, None).await;
+            let token = match first.unwrap() {
+                TokenResult::Token(token) => token,
+                TokenResult::OtpRequired(provider) => {
+                    let code = env("PLEASANT_TEST_OTP");
+                    let otp = Some((code.as_str(), provider.as_str()));
+                    match pleasant::request_token(&client, &server, &user, &password, otp)
+                        .await
+                        .unwrap()
+                    {
+                        TokenResult::Token(token) => token,
+                        TokenResult::OtpRequired(_) => panic!("2FA code rejected"),
+                    }
+                }
+            };
+            for version in ["v5", "v6", "v7"] {
+                let path = format!("/api/{version}/rest/entries/{id}");
+                match pleasant::request(&client, &server, &token, Method::GET, &path, None).await {
+                    Ok(value) => println!(
+                        "--- {version} ---\n{}",
+                        serde_json::to_string_pretty(&masked(&value)).unwrap()
+                    ),
+                    Err(FetchError::Unauthorized) => println!("--- {version} --- HTTP 401"),
+                    Err(FetchError::Other(message)) => println!("--- {version} --- {message}"),
+                }
+            }
+        });
+    }
+
     /// Runs against the real server and leaves one test entry behind. Prints no secrets. Needs
     /// PLEASANT_TEST_FOLDER, PLEASANT_TEST_USER and PLEASANT_TEST_PASSWORD; run with
     /// `cargo test live_ -- --ignored`.
@@ -528,6 +709,7 @@ mod live_tests {
                 url: "https://example.invalid".into(),
                 notes: "angelegt per API".into(),
                 password: Some(TEST_PASSWORD.into()),
+                totp: None,
             })
             .unwrap();
             body["CustomUserFields"] = json!({ "Testfeld": "bleibt" });
@@ -542,6 +724,7 @@ mod live_tests {
                 url: String::new(),
                 notes: "angelegt per API".into(),
                 password: None,
+                totp: None,
             })
             .unwrap();
             send(Method::PATCH, path.clone(), Some(patch)).await;
@@ -559,6 +742,7 @@ mod live_tests {
                 url: String::new(),
                 notes: "angelegt per API".into(),
                 password: Some(NEW_PASSWORD.into()),
+                totp: None,
             })
             .unwrap();
             send(Method::PATCH, path.clone(), Some(change)).await;
@@ -583,17 +767,25 @@ fn main() {
     });
     let result = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| tray::show_main(app)))
-        .manage(AppState { client, server: RwLock::new(pleasant::DEFAULT_SERVER.to_string()), session: Mutex::new(None), lock_generation: AtomicU64::new(0), last_activity: RwLock::new((SystemTime::now(), Instant::now())), startup_warning: RwLock::new(startup_warning), token: Mutex::new(None), tree: RwLock::new(None), totp: RwLock::new(None) })
+        .manage(AppState { client, server: RwLock::new(pleasant::DEFAULT_SERVER.to_string()), session: Mutex::new(None), lock_generation: AtomicU64::new(0), last_activity: RwLock::new((SystemTime::now(), Instant::now())), startup_warning: RwLock::new(startup_warning), token: Mutex::new(None), tree: RwLock::new(None), tree_saved_at: AtomicU64::new(0), totp: RwLock::new(None) })
         .invoke_handler(tauri::generate_handler![
             touch, lock, load_cached, login, server_info, folder_tree, refresh_index, logout, open_entry, close_entry,
             totp_code, copy_totp, copy_text, copy_password, reveal_password, open_url,
             create_entry, update_entry
         ])
         .setup(|app| {
+            if let Ok(dir) = app.path().app_local_data_dir() {
+                log::init(&dir);
+                log::write(&pleasant::startup_summary());
+            }
             tray::create(app.handle())?;
             tauri::async_runtime::spawn(watch_lock_triggers(app.handle().clone()));
             if let Some(window) = app.get_webview_window("main") {
                 tray::hide_on_close(&window);
+                // The setup registers this flag, so a start with Windows stays in the tray.
+                if std::env::args().any(|arg| arg == "--autostart") {
+                    window.hide()?;
+                }
             }
             Ok(())
         })
