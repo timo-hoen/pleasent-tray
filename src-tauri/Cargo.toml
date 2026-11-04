@@ -1,0 +1,30 @@
+[package]
+name = "pleasant-tray"
+version = "0.1.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
+tauri-plugin-single-instance = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+keyring = { version = "3", features = ["windows-native"] }
+arboard = "3"
+data-encoding = "2"
+totp-lite = "2"
+tauri-plugin-opener = "2"
+tokio = { version = "1", features = ["sync", "time"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
+windows-sys = { version = "0.61", features = ["Win32_System_RemoteDesktop"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "s"
+strip = true

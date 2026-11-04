@@ -1,0 +1,7 @@
+src-tauri/target/
+src-tauri/gen/
+.megamemory/
+.ruff_cache/
+.claude/
+.env
+.env.*
