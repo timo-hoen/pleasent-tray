@@ -190,12 +190,17 @@ export default function App() {
     focusQuery();
   };
 
-  const selectFolder = (node: FolderNode) => {
+  /** Leaves the focus alone, so the arrow keys keep working in the folder tree. */
+  const navigateFolder = (node: FolderNode) => {
     if (node.id !== selectedId) setFilter("");
     setSelectedId(node.id);
-    setExpanded((previous) => new Set(previous).add(node.id));
-    if (entry) closeEntry();
+    if (entry) leaveEntry();
     else setEditor(null);
+  };
+
+  const selectFolder = (node: FolderNode) => {
+    navigateFolder(node);
+    setExpanded((previous) => new Set(previous).add(node.id));
   };
 
   const toggleFolder = (id: string) => {
@@ -359,6 +364,7 @@ export default function App() {
         expanded={expanded}
         onToggle={toggleFolder}
         onSelect={selectFolder}
+        onNavigate={navigateFolder}
         status={status}
         reloading={reloading}
         onReload={() => void refresh()}

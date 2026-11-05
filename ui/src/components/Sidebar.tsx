@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, RefreshCw, Search, Settings, X } from "lucide-react";
-import { useRef, type KeyboardEvent, type PointerEvent } from "react";
+import { useEffect, useRef, type KeyboardEvent, type PointerEvent } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -11,11 +11,14 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { highlightParts, splitTerms, visibleRows } from "@/lib/tree";
+import { highlightParts, splitTerms, treeKeyAction, typeAheadMatch, visibleRows } from "@/lib/tree";
 import { cn } from "@/lib/utils";
 import type { FolderNode, ServerInfo, Theme } from "@/types";
 
 const KEY_STEP = 20;
+const TYPE_AHEAD_RESET_MS = 800;
+const NAVIGATION_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "Enter"];
+const rowDomId = (id: string) => `folder-${id}`;
 
 interface SidebarProps {
   width: number;
@@ -28,6 +31,8 @@ interface SidebarProps {
   expanded: Set<string>;
   onToggle: (id: string) => void;
   onSelect: (node: FolderNode) => void;
+  /** Keyboard selection: shows the folder without opening it. */
+  onNavigate: (node: FolderNode) => void;
   status: { text: string; bad: boolean };
   reloading: boolean;
   onReload: () => void;
@@ -90,6 +95,39 @@ export function Sidebar(props: SidebarProps) {
   const { tree, query, selectedId, expanded, status, server } = props;
   const terms = splitTerms(query);
   const rows = tree ? visibleRows(tree, terms, expanded) : [];
+  const treeRef = useRef<HTMLUListElement>(null);
+  const typed = useRef({ text: "", at: 0 });
+  const hasSelectedRow = rows.some((row) => row.node.id === selectedId);
+
+  useEffect(() => {
+    if (selectedId) document.getElementById(rowDomId(selectedId))?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
+
+  const typeAhead = (key: string) => {
+    const now = Date.now();
+    const previous = now - typed.current.at < TYPE_AHEAD_RESET_MS ? typed.current.text : "";
+    // A space only belongs to a name that is already being typed.
+    if (key === " " && !previous) return;
+    const text = previous + key;
+    typed.current = { text, at: now };
+    const match = typeAheadMatch(rows, text, selectedId);
+    if (match) props.onNavigate(match);
+  };
+
+  const onTreeKey = (event: KeyboardEvent) => {
+    if (event.ctrlKey || event.altKey || event.metaKey) return;
+    if (event.key.length === 1) {
+      event.preventDefault();
+      typeAhead(event.key);
+      return;
+    }
+    if (!NAVIGATION_KEYS.includes(event.key)) return;
+    event.preventDefault();
+    const action = treeKeyAction(rows, selectedId, event.key);
+    if (!action) return;
+    if ("select" in action) props.onNavigate(action.select);
+    else props.onToggle(action.toggle);
+  };
 
   return (
     <aside
@@ -127,13 +165,28 @@ export function Sidebar(props: SidebarProps) {
         )}
       </div>
 
-      <ul aria-label="Ordner" className="min-h-0 flex-1 overflow-auto p-2">
+      <ul
+        ref={treeRef}
+        role="tree"
+        tabIndex={0}
+        aria-label="Ordner"
+        aria-activedescendant={hasSelectedRow && selectedId ? rowDomId(selectedId) : undefined}
+        className="group/tree min-h-0 flex-1 overflow-auto p-2 outline-none"
+        onKeyDown={onTreeKey}
+        onClick={() => treeRef.current?.focus()}
+      >
         {rows.map(({ node, depth, isOpen }) => (
           <li
             key={node.id}
+            id={rowDomId(node.id)}
+            role="treeitem"
+            aria-selected={node.id === selectedId}
+            aria-expanded={node.children.length ? isOpen : undefined}
+            aria-level={depth + 1}
             className={cn(
               "flex items-center rounded-md text-sm hover:bg-sidebar-accent",
-              node.id === selectedId && "bg-sidebar-accent font-medium",
+              node.id === selectedId &&
+                "bg-sidebar-accent font-medium group-focus/tree:ring-2 group-focus/tree:ring-ring group-focus/tree:ring-inset",
             )}
             style={{ paddingLeft: depth * 16 }}
           >
@@ -149,8 +202,9 @@ export function Sidebar(props: SidebarProps) {
             </Button>
             <button
               type="button"
+              tabIndex={-1}
               title={node.name}
-              className="min-w-0 flex-1 cursor-pointer truncate rounded-md py-1.5 pr-2 pl-1 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="min-w-0 flex-1 cursor-pointer truncate rounded-md py-1.5 pr-2 pl-1 text-left outline-none"
               onClick={() => props.onSelect(node)}
             >
               <Highlighted text={node.name || "(ohne Namen)"} terms={terms} />

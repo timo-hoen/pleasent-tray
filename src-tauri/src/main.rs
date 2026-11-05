@@ -10,6 +10,7 @@ mod log;
 mod pleasant;
 mod session_lock;
 mod tray;
+mod update;
 
 use pleasant::{FetchError, LoginOutcome, TokenResult};
 use reqwest::Method;
@@ -499,6 +500,11 @@ fn open_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn check_update(state: State<'_, AppState>) -> Result<Option<update::UpdateInfo>, ()> {
+    Ok(update::check(state.client.verified()).await)
+}
+
+#[tauri::command]
 async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     clear_session(&state).await;
     match std::fs::remove_file(cache_path(&app)?) {
@@ -771,7 +777,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             touch, lock, load_cached, login, server_info, folder_tree, refresh_index, logout, open_entry, close_entry,
             totp_code, copy_totp, copy_text, copy_password, reveal_password, open_url,
-            create_entry, update_entry
+            create_entry, update_entry, check_update
         ])
         .setup(|app| {
             if let Ok(dir) = app.path().app_local_data_dir() {

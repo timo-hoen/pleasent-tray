@@ -53,3 +53,8 @@ export interface ServerInfo {
 }
 
 export type Theme = "light" | "dark";
+
+export interface UpdateInfo {
+  version: string;
+  setup_url: string;
+}

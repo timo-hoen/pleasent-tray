@@ -55,6 +55,11 @@ pub struct Clients {
 }
 
 impl Clients {
+    /// For requests outside the Pleasant server, which always check the certificate.
+    pub fn verified(&self) -> &Client {
+        &self.verified
+    }
+
     /// Picks the client for a stored address and returns the address to send requests to.
     fn for_server<'a>(&self, server: &'a str) -> (&Client, &'a str) {
         match server.strip_suffix(UNSAFE_SUFFIX) {
